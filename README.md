@@ -51,8 +51,8 @@ jobs:
 
 ## Outputs
 
-| Output           | Description                                                     |
-|------------------|-----------------------------------------------------------------|
+| Output               | Description                                                     |
+|----------------------|-----------------------------------------------------------------|
 | `latest-app-version` | The latest Docker image tag matching `docker-image-tag-pattern` |
 
 ---
