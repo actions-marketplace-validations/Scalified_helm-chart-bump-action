@@ -26,9 +26,12 @@ inputs:
     required: true
 
 outputs:
-  latest-app-version:
-    description: "The latest version found in Docker Hub matching the specified pattern"
-    value: ${{ steps.determine-latest-app-version.outputs.latest-app-version }}
+  latest-tag:
+    description: "The latest image tag found in Docker Hub matching the specified pattern"
+    value: ${{ steps.fetch-latest-tag.outputs.latest-tag }}
+  chart-version-latest:
+    description: "The latest chart version set in Chart.yaml"
+    value: ${{ steps.update-chart-version.outputs.chart-version-latest }}
 
 runs:
   using: "composite"
@@ -40,15 +43,15 @@ runs:
         token: ${{ inputs.token }}
         fetch-depth: 0
 
-    - id: determine-latest-app-version
-      name: Determine latest app version
+    - id: fetch-latest-tag
+      name: Fetch latest tag
       env:
         DOCKERHUB_NAMESPACE: ${{ inputs.dockerhub-namespace }}
         DOCKERHUB_REPOSITORY: ${{ inputs.dockerhub-repository }}
         DOCKER_IMAGE_TAG_PATTERN: ${{ inputs.docker-image-tag-pattern }}
       shell: bash
       run: |
-        # Determine latest app version
+        # Fetch latest tag
 
         echo "::group::🔧 Build Docker Hub API URL (${DOCKERHUB_NAMESPACE}/${DOCKERHUB_REPOSITORY})"
         DOCKERHUB_API_URL="https://hub.docker.com/v2/namespaces/${DOCKERHUB_NAMESPACE}/"\
@@ -60,10 +63,10 @@ runs:
         echo "::group::📥 Fetch tags from Docker Hub (${DOCKERHUB_NAMESPACE}/${DOCKERHUB_REPOSITORY})"
         tags_response="$(curl -fsSL "${DOCKERHUB_API_URL}")"
         tags_count="$(jq -r '.count' <<< "${tags_response}")"
-        echo "✅ Retrieved ${tags_count} tags for ${DOCKERHUB_NAMESPACE}/${DOCKERHUB_REPOSITORY}"
+        echo "✅ Fetched ${tags_count} tags for ${DOCKERHUB_NAMESPACE}/${DOCKERHUB_REPOSITORY}"
         echo "::endgroup::"
 
-        echo "::group::🔎 Find the latest tag matching the version pattern"
+        echo "::group::🔎 Find the latest tag matching the tag version pattern"
         latest_tag_info="$(
           jq -r --arg pattern "${DOCKER_IMAGE_TAG_PATTERN}" '
             .results
@@ -82,17 +85,8 @@ runs:
         if [[ -z "${latest_tag}" ]]; then
           echo "⚠️ No image tags matched pattern: ${DOCKER_IMAGE_TAG_PATTERN}"
         else
-          latest_app_version="${latest_tag#v}"
-          if [[ "${latest_app_version}" =~ ^([0-9]+)$ ]]; then
-            latest_app_version="${latest_app_version}.0.0"
-            echo "⚠️ Version ${latest_tag} looks like a major version. Normalized to ${latest_app_version}"
-          fi
-          if [[ "${latest_app_version}" =~ ^([0-9]+\.[0-9]+)$ ]]; then
-            latest_app_version="${latest_app_version}.0"
-            echo "⚠️ Version ${latest_tag} looks like a major.minor version. Normalized to ${latest_app_version}"
-          fi
-          echo "✅ Latest app version: ${latest_app_version} (${latest_tag_date})"
-          echo "latest-app-version=${latest_app_version}" >> "${GITHUB_OUTPUT}"
+          echo "✅ Latest tag: ${latest_tag} (${latest_tag_date})"
+          echo "latest-tag=${latest_tag}" >> "${GITHUB_OUTPUT}"
         fi
         echo "::endgroup::"
 
@@ -101,15 +95,16 @@ runs:
       env:
         CHART_FILE_PATH: ${{ inputs.chart-file-path }}
       shell: bash
-      if: ${{ steps.determine-latest-app-version.outputs.latest-app-version != '' }}
+      if: ${{ steps.fetch-latest-tag.outputs.latest-tag != '' }}
       run: |
         # Update Chart version
+
         if [[ ! -f "${CHART_FILE_PATH}" ]]; then
           echo "::error::❌ Chart file was not found: ${CHART_FILE_PATH}"
           exit 1
         fi
 
-        echo "::group::📖 Read current Chart version"
+        echo "::group::📖 Read current Chart app version"
         chart_app_version="$(
           sed -n -E 's/^appVersion:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p' "${CHART_FILE_PATH}" | head -n 1
         )"
@@ -121,37 +116,54 @@ runs:
         echo "ℹ️ Current Chart app version: ${chart_app_version}"
         echo "::endgroup::"
 
-        echo "::group::⚖️ Compare versions"
-        latest_app_version="${{ steps.determine-latest-app-version.outputs.latest-app-version }}"
-        if [[ "${chart_app_version}" == "${latest_app_version}" ]]; then
+        echo "::group::⚖️ Compare Chart app versions"
+        latest_tag="${{ steps.fetch-latest-tag.outputs.latest-tag }}"
+        chart_app_version_latest="${latest_tag}"
+        if [[ "${chart_app_version}" == "${chart_app_version_latest}" ]]; then
           echo "✅ No update needed. Chart app version is already up to date"
           echo "::endgroup::"
           exit 0
         else
-          echo "🔁 Version mismatch: chart = ${chart_app_version}, latest = ${latest_app_version}"
+          echo "🔁 Version mismatch: chart app version = ${chart_app_version}," \
+            "chart app latest version = ${chart_app_version_latest}"
         fi
         echo "::endgroup::"
 
         echo "::group::✍️ Update Chart version in ${CHART_FILE_PATH}"
+        chart_version_latest="${chart_app_version_latest#v}"
+        if [[ "${chart_version_latest}" =~ ^([0-9]+)$ ]]; then
+          chart_version_latest="${chart_version_latest}.0.0"
+          echo "⚠️ Version tag ${latest_tag} looks like a major version. Normalized to ${chart_version_latest}"
+        fi
+        if [[ "${chart_version_latest}" =~ ^([0-9]+\.[0-9]+)$ ]]; then
+          chart_version_latest="${chart_version_latest}.0"
+          echo "⚠️ Version tag ${latest_tag} looks like a major.minor version. Normalized to ${chart_version_latest}"
+        fi
+
         semver_regex='(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'\
         '(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?'\
         '(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?'
-        latest_version=$(echo "${latest_app_version}" | grep -oP "${semver_regex}")
-        if [[ -z "${latest_version}" ]]; then
-          echo "::error::❌ Can't extract semantic version from '${latest_app_version}'"
-          echo "::endgroup::"
-          exit 1
+        if [[ -z "$(echo "${chart_version_latest}" | grep -oP "${semver_regex}")" ]]; then
+            echo "::error::❌ Can't generate semantic version for '${latest_tag}' image tag"
+            echo "::endgroup::"
+            exit 1
         fi
-        sed -i -E "s|^version:[[:space:]].*$|version: ${latest_version}|" "${CHART_FILE_PATH}"
-        sed -i -E "s|^appVersion:[[:space:]].*$|appVersion: \"${latest_app_version}\"|" "${CHART_FILE_PATH}"
-        echo "✅ Updated Chart version in ${CHART_FILE_PATH} to ${latest_app_version}"
+        echo "✅ Chart latest version: ${chart_version_latest}" 
+        echo "✅ Chart app latest version: ${chart_app_version_latest}"
+
+        sed -i -E "s|^version:[[:space:]].*$|version: ${chart_version_latest}|" "${CHART_FILE_PATH}"
+        sed -i -E "s|^appVersion:[[:space:]].*$|appVersion: \"${chart_app_version_latest}\"|" "${CHART_FILE_PATH}"
+        
+        echo "chart-version-latest=${chart_version_latest}" >> "${GITHUB_OUTPUT}"
+
+        echo "✅ Updated Chart version in ${CHART_FILE_PATH} to ${chart_version_latest}"
         echo "::endgroup::"
 
     - id: commit-and-push
       name: Commit and push Chart changes
       env:
         CHART_FILE_PATH: ${{ inputs.chart-file-path }}
-      if: ${{ steps.determine-latest-app-version.outputs.latest-app-version != '' }}
+      if: ${{ steps.update-chart-version.outputs.chart-version-latest != '' }}
       shell: bash
       run: |
         # Commit and push Chart changes
@@ -161,11 +173,11 @@ runs:
         fi
 
         echo "::group::🧾 Commit Chart changes"
-        latest_app_version="${{ steps.determine-latest-app-version.outputs.latest-app-version }}"
+        chart_version_latest="${{ steps.update-chart-version.outputs.chart-version-latest }}"
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add "${CHART_FILE_PATH}"
-        git commit -m "chore(chart): bump chart to ${latest_app_version}"
+        git commit -m "chore(chart): bump chart to ${chart_version_latest}"
         echo "✅ Committed changes for ${CHART_FILE_PATH}"
         echo "::endgroup::"
 
