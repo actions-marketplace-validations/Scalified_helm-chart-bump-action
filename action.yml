@@ -124,7 +124,7 @@ runs:
           echo "::endgroup::"
           exit 0
         else
-          echo "🔁 Version mismatch: chart app version = ${chart_app_version}," \
+          echo "🔁 Version mismatch: current chart app version = ${chart_app_version}," \
             "chart app latest version = ${chart_app_version_latest}"
         fi
         echo "::endgroup::"
@@ -153,10 +153,11 @@ runs:
 
         sed -i -E "s|^version:[[:space:]].*$|version: ${chart_version_latest}|" "${CHART_FILE_PATH}"
         sed -i -E "s|^appVersion:[[:space:]].*$|appVersion: \"${chart_app_version_latest}\"|" "${CHART_FILE_PATH}"
-        
-        echo "chart-version-latest=${chart_version_latest}" >> "${GITHUB_OUTPUT}"
 
-        echo "✅ Updated Chart version in ${CHART_FILE_PATH} to ${chart_version_latest}"
+        echo "✅ Updated Chart version in ${CHART_FILE_PATH} to: ${chart_version_latest}"
+        echo "✅ Updated Chart app version in ${CHART_FILE_PATH} to: ${chart_app_version_latest}"
+
+        echo "chart-version-latest=${chart_version_latest}" >> "${GITHUB_OUTPUT}"
         echo "::endgroup::"
 
     - id: commit-and-push
